@@ -2,7 +2,27 @@ import bcrypt from 'bcryptjs';
 import { db } from './connection.js';
 import { v4 as uuidv4 } from 'uuid';
 
+import fs from 'fs';
+
 export async function seedDatabase() {
+  // Ensure schema tables exist
+  try {
+    const schemaPath = new URL('./schema.sql', import.meta.url);
+    const schemaSql = fs.readFileSync(schemaPath, 'utf-8');
+    await db.query(schemaSql);
+  } catch (e: any) {
+    console.warn('Schema apply note:', e.message || e);
+  }
+
+  // Check if database is already seeded
+  try {
+    const checkRes = await db.query('SELECT id FROM shows LIMIT 1');
+    if (checkRes.rows && checkRes.rows.length > 0) {
+      console.log('⚡ Database already seeded. Skipping full re-seed.');
+      return;
+    }
+  } catch (e) {}
+
   console.log('🌱 Seeding BookMySeat demo database...');
 
   // 1. Clean / Init tables if needed
@@ -259,7 +279,7 @@ export async function seedDatabase() {
           m.language,
           m.genres,
           m.description,
-          m.cast_list,
+          JSON.stringify(m.cast_list),
           m.director,
           m.is_trending,
           m.is_now_showing,
@@ -267,7 +287,9 @@ export async function seedDatabase() {
           m.category
         ]
       );
-    } catch (e) {}
+    } catch (e: any) {
+      console.warn('Movie insert note:', e.message || e);
+    }
   }
 
   // THEATRES
@@ -318,10 +340,12 @@ export async function seedDatabase() {
     try {
       await db.query(
         `INSERT INTO theatres (id, name, city, address, rating, facilities)
-         VALUES ($1, $2, $3, $4, $5, $6)`,
+         VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT (id) DO NOTHING`,
         [t.id, t.name, t.city, t.address, t.rating, t.facilities]
       );
-    } catch (e) {}
+    } catch (e: any) {
+      console.warn('Theatre insert note:', e.message || e);
+    }
   }
 
   // SCREENS & SEATS
@@ -334,56 +358,65 @@ export async function seedDatabase() {
     { id: 'scr_hyd_1', theatre_id: 'th_prasads_hyd', name: 'Screen 1 - Giant Screen', format: 'IMAX 3D', total_seats: 80 }
   ];
 
+  const allSeats: any[][] = [];
   for (const s of screens) {
     try {
       await db.query(
         `INSERT INTO screens (id, theatre_id, name, format, total_seats)
-         VALUES ($1, $2, $3, $4, $5)`,
+         VALUES ($1, $2, $3, $4, $5) ON CONFLICT (id) DO NOTHING`,
         [s.id, s.theatre_id, s.name, s.format, s.total_seats]
       );
-    } catch (e) {}
+    } catch (e: any) {
+      console.warn('Screen insert note:', e.message || e);
+    }
 
-    // Generate physical seats template for each screen (8 rows A-H, 10 seats per row = 80 seats)
-    // Row A, B: RECLINER (Luxury)
-    // Row C, D, E: PRIME (Premium)
-    // Row F, G, H: CLASSIC (Standard)
     const rows = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H'];
     for (const r of rows) {
       const category = (r === 'A' || r === 'B') ? 'RECLINER' : (r === 'C' || r === 'D' || r === 'E') ? 'PRIME' : 'CLASSIC';
       for (let num = 1; num <= 10; num++) {
         const seatId = `${s.id}_${r}${num}`;
-        try {
-          await db.query(
-            `INSERT INTO seats (id, screen_id, row_label, seat_number, category, is_active)
-             VALUES ($1, $2, $3, $4, $5, $6)`,
-            [seatId, s.id, r, num, category, true]
-          );
-        } catch (e) {}
+        allSeats.push([seatId, s.id, r, num, category, true]);
       }
+    }
+  }
+
+  for (let i = 0; i < allSeats.length; i += 50) {
+    const chunk = allSeats.slice(i, i + 50);
+    const valueClauses: string[] = [];
+    const params: any[] = [];
+    chunk.forEach((row, idx) => {
+      const offset = idx * 6;
+      valueClauses.push(`($${offset + 1}, $${offset + 2}, $${offset + 3}, $${offset + 4}, $${offset + 5}, $${offset + 6})`);
+      params.push(...row);
+    });
+    try {
+      await db.query(
+        `INSERT INTO seats (id, screen_id, row_label, seat_number, category, is_active)
+         VALUES ${valueClauses.join(', ')} ON CONFLICT (id) DO NOTHING`,
+        params
+      );
+    } catch (e: any) {
+      console.warn('Seats insert note:', e.message || e);
     }
   }
 
   // SHOWTIMES (Today & upcoming dates)
   const today = new Date().toISOString().split('T')[0];
   const tomorrow = new Date(Date.now() + 86400000).toISOString().split('T')[0];
-  const dayAfter = new Date(Date.now() + 172800000).toISOString().split('T')[0];
-  const dates = [today, tomorrow, dayAfter];
+  const dates = [today, tomorrow];
 
   const showTimesList = [
     { start: '10:00 AM', end: '12:45 PM' },
     { start: '01:30 PM', end: '04:15 PM' },
     { start: '04:45 PM', end: '07:30 PM' },
-    { start: '08:00 PM', end: '10:45 PM' },
-    { start: '11:15 PM', end: '02:00 AM' }
+    { start: '08:00 PM', end: '10:45 PM' }
   ];
 
   const shows = [];
-  let showCounter = 1;
-
   for (const date of dates) {
-    for (const movie of movies.slice(0, 5)) {
-      for (const scr of screens.slice(0, 4)) {
-        for (let idx = 0; idx < 3; idx++) {
+    for (const movie of movies.slice(0, 4)) {
+      for (const scr of screens.slice(0, 3)) {
+        for (let idx = 0; idx < 2; idx++) {
           const timeSlot = showTimesList[idx];
           const showId = `show_${movie.id}_${scr.id}_${date}_${idx + 1}`;
           shows.push({
@@ -402,30 +435,50 @@ export async function seedDatabase() {
     }
   }
 
+  // Get screen seats map
+  const screenSeatsMap: Record<string, any[]> = {};
+  for (const scr of screens) {
+    const seatsRes = await db.query('SELECT * FROM seats WHERE screen_id = $1', [scr.id]);
+    screenSeatsMap[scr.id] = seatsRes.rows;
+  }
+
   for (const sh of shows) {
     try {
       await db.query(
         `INSERT INTO shows (id, movie_id, screen_id, theatre_id, start_time, end_time, date, language, format)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) ON CONFLICT (id) DO NOTHING`,
         [sh.id, sh.movie_id, sh.screen_id, sh.theatre_id, sh.start_time, sh.end_time, sh.date, sh.language, sh.format]
       );
-    } catch (e) {}
+    } catch (e: any) {
+      console.warn('Show insert note:', e.message || e);
+    }
 
-    // Populate show_seats for each show
-    const seatsRes = await db.query('SELECT * FROM seats WHERE screen_id = $1', [sh.screen_id]);
-    for (const seat of seatsRes.rows) {
+    const screenSeats = screenSeatsMap[sh.screen_id] || [];
+    const showSeatRows: any[][] = [];
+    for (const seat of screenSeats) {
       const showSeatId = `${sh.id}_${seat.row_label}${seat.seat_number}`;
       const price = seat.category === 'RECLINER' ? 450 : seat.category === 'PRIME' ? 280 : 180;
-      
-      // Mark a couple of sample booked seats (e.g. C5, C6) for realism
       const isPreBooked = (seat.row_label === 'C' && (seat.seat_number === 4 || seat.seat_number === 5)) ||
                           (seat.row_label === 'E' && (seat.seat_number === 7 || seat.seat_number === 8));
+      showSeatRows.push([showSeatId, sh.id, seat.id, seat.category, price, isPreBooked ? 'BOOKED' : 'AVAILABLE']);
+    }
 
+    // Chunk insert 50 show_seats at a time
+    const chunkSize = 50;
+    for (let i = 0; i < showSeatRows.length; i += chunkSize) {
+      const chunk = showSeatRows.slice(i, i + chunkSize);
+      const valueClauses: string[] = [];
+      const params: any[] = [];
+      chunk.forEach((row, idx) => {
+        const offset = idx * 6;
+        valueClauses.push(`($${offset + 1}, $${offset + 2}, $${offset + 3}, $${offset + 4}, $${offset + 5}, $${offset + 6})`);
+        params.push(...row);
+      });
       try {
         await db.query(
           `INSERT INTO show_seats (id, show_id, seat_id, category, price, status)
-           VALUES ($1, $2, $3, $4, $5, $6)`,
-          [showSeatId, sh.id, seat.id, seat.category, price, isPreBooked ? 'BOOKED' : 'AVAILABLE']
+           VALUES ${valueClauses.join(', ')} ON CONFLICT (id) DO NOTHING`,
+          params
         );
       } catch (e) {}
     }

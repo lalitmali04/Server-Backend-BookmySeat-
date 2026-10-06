@@ -83,7 +83,7 @@ export class BookingService {
    * Final Booking Confirmation with ACID Transaction + Row-Level Locking + Idempotency
    */
   async confirmBooking(params: ConfirmBookingParams): Promise<any> {
-    const { userId, showId, seatIds, userLockToken, paymentMethod, idempotencyKey } = params;
+    const { idempotencyKey } = params;
 
     // 1. Idempotency Check & In-flight Deduplication
     if (idempotencyKey) {
@@ -91,30 +91,32 @@ export class BookingService {
         return this.inFlightBookings.get(idempotencyKey);
       }
 
-      const existingBookingRes = await db.query(
-        'SELECT * FROM bookings WHERE idempotency_key = $1',
-        [idempotencyKey]
-      );
-      if (existingBookingRes.rows.length > 0) {
-        const existing = existingBookingRes.rows[0];
-        const items = (await db.query('SELECT * FROM booking_items WHERE booking_id = $1', [existing.id])).rows;
-        return {
-          ...existing,
-          items,
-          isDuplicateRequest: true
-        };
-      }
-    }
+      const executionPromise = (async () => {
+        const existingBookingRes = await db.query(
+          'SELECT * FROM bookings WHERE idempotency_key = $1',
+          [idempotencyKey]
+        );
+        if (existingBookingRes.rows.length > 0) {
+          const existing = existingBookingRes.rows[0];
+          const items = (await db.query('SELECT * FROM booking_items WHERE booking_id = $1', [existing.id])).rows;
+          return {
+            ...existing,
+            items,
+            isDuplicateRequest: true
+          };
+        }
+        return this.executeBookingTransaction(params);
+      })();
 
-    const executionPromise = this.executeBookingTransaction(params);
-    if (idempotencyKey) {
       this.inFlightBookings.set(idempotencyKey, executionPromise);
       executionPromise.catch(() => {}).finally(() => {
         this.inFlightBookings.delete(idempotencyKey);
       });
+
+      return executionPromise;
     }
 
-    return executionPromise;
+    return this.executeBookingTransaction(params);
   }
 
   private async executeBookingTransaction(params: ConfirmBookingParams) {
@@ -219,7 +221,7 @@ export class BookingService {
       for (const ss of targetSeats) {
         const itemId = uuidv4();
         const seat = seatsMap.get(ss.seat_id);
-        const seatLabel = seat ? `${seat.row_label}${seat.seat_number}` : ss.seat_id;
+        const seatLabel = seat ? `${(seat as any).row_label}${(seat as any).seat_number}` : ss.seat_id;
 
         await client.query(
           `INSERT INTO booking_items (id, booking_id, show_seat_id, seat_label, price, category)

@@ -26,7 +26,7 @@ class PostgresAdapter {
   }
 
   async query<T = any>(sql: string, params?: any[]): Promise<{ rows: T[]; rowCount: number }> {
-    const res = await this.pool.query(sql, params);
+    const res = (params && params.length > 0) ? await this.pool.query(sql, params) : await this.pool.query(sql);
     return { rows: res.rows, rowCount: res.rowCount || 0 };
   }
 
@@ -34,7 +34,7 @@ class PostgresAdapter {
     const client = await this.pool.connect();
     return {
       query: async (sql, params) => {
-        const res = await client.query(sql, params);
+        const res = (params && params.length > 0) ? await client.query(sql, params) : await client.query(sql);
         return { rows: res.rows, rowCount: res.rowCount || 0 };
       },
       beginTransaction: async () => {

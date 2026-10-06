@@ -95,14 +95,14 @@ class InMemoryRedisStore {
 }
 
 class RedisLockService {
-  private redisClient: Redis | null = null;
+  private redisClient: any = null;
   private inMemoryRedis: InMemoryRedisStore = new InMemoryRedisStore();
   private useRealRedis: boolean = false;
 
   constructor() {
     if (config.redisUrl) {
       try {
-        this.redisClient = new Redis(config.redisUrl, {
+        this.redisClient = new (Redis as any)(config.redisUrl, {
           maxRetriesPerRequest: 1,
           connectTimeout: 3000,
           retryStrategy: () => null // Don't hang if offline, fallback seamlessly
@@ -113,7 +113,7 @@ class RedisLockService {
           this.useRealRedis = true;
         });
 
-        this.redisClient.on('error', (err) => {
+        this.redisClient.on('error', (err: any) => {
           console.warn('Redis connection failed. Using high-performance in-memory atomic lock engine.', err.message);
           this.useRealRedis = false;
         });

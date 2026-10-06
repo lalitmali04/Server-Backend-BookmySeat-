@@ -26,6 +26,18 @@ async function runConcurrencyTests() {
   const seatB1 = `${screenId}_B1`;
   const seatB2 = `${screenId}_B2`;
 
+  // Reset test seats status to AVAILABLE for clean, idempotent test execution
+  await db.query(
+    "UPDATE show_seats SET status = 'AVAILABLE' WHERE show_id = $1 AND seat_id IN ($2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
+    [showId, seatA1, seatA2, seatA3, seatB1, seatB2, `${screenId}_B3`, `${screenId}_B4`, `${screenId}_B5`, `${screenId}_B6`, `${screenId}_B7`]
+  );
+
+  // Clear any residual Redis locks for test seats from previous test runs
+  const testSeatsList = [seatA1, seatA2, seatA3, seatB1, seatB2, `${screenId}_B3`, `${screenId}_B4`, `${screenId}_B5`, `${screenId}_B6`, `${screenId}_B7`];
+  for (const sId of testSeatsList) {
+    await redisLockService.forceReleaseSeatLock(showId, sId);
+  }
+
   let passedCount = 0;
   let totalTests = 8;
 
